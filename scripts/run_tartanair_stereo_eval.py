@@ -2,8 +2,8 @@
 """Run tartanair_stereo_eval and report the final Gaussian count.
 
 The wrapper keeps Photo-SLAM's existing runner behavior unchanged, then reads the
-vertex count from the final *_shutdown PLY header. The count is therefore
-available in both quality mode and --skip-final-eval timing mode.
+vertex count from the FINAL Gaussian point_cloud.ply header. The count is
+therefore available in both quality mode and --skip-final-eval timing mode.
 
 The runner's internal timing_summary.txt remains the source of truth for timing:
 this post-run Gaussian-count parsing is NOT included in those wall-time values.
@@ -79,11 +79,31 @@ def find_final_gaussian_ply(result_dir: Path) -> Tuple[Path, int]:
         )
 
     shutdown_dirs.sort(key=lambda x: x[0], reverse=True)
-    _, final_dir = shutdown_dirs[0]
+    final_iter, final_dir = shutdown_dirs[0]
 
-    candidates = sorted(final_dir.rglob("*.ply"))
+    # Photo-SLAM's GaussianMapper::savePly() writes the final Gaussian model to:
+    #   <iter>_shutdown/point_cloud/iteration_<iter>/point_cloud.ply
+    # The same shutdown directory also contains input.ply (sparse SLAM points),
+    # which must NOT be used as the Gaussian count.
+    expected = (
+        final_dir
+        / "point_cloud"
+        / f"iteration_{final_iter}"
+        / "point_cloud.ply"
+    )
+
+    candidates = []
+    if expected.exists():
+        candidates.append(expected)
+    candidates.extend(
+        p for p in sorted(final_dir.rglob("point_cloud.ply"))
+        if p != expected
+    )
+
     if not candidates:
-        raise FileNotFoundError(f"No PLY found under final shutdown dir: {final_dir}")
+        raise FileNotFoundError(
+            f"No final Gaussian point_cloud.ply found under {final_dir}"
+        )
 
     for ply in candidates:
         count = parse_ply_vertex_count(ply)
@@ -91,7 +111,7 @@ def find_final_gaussian_ply(result_dir: Path) -> Tuple[Path, int]:
             return ply, count
 
     raise RuntimeError(
-        f"Found PLY file(s) under {final_dir}, but no 'element vertex N' header"
+        f"Found final point_cloud.ply under {final_dir}, but no 'element vertex N' header"
     )
 
 
