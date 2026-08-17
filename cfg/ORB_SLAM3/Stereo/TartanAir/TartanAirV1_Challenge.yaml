@@ -1,0 +1,51 @@
+%YAML:1.0
+
+File.version: "1.0"
+
+# TartanAir V1 / CVPR Visual SLAM Stereo Challenge.
+# Official V1 camera geometry:
+#   resolution 640x480
+#   fx=fy=320, cx=320, cy=240
+#   pinhole, no distortion
+#   stereo baseline 0.25 m
+Camera.type: "Rectified"
+
+Camera1.fx: 320.0
+Camera1.fy: 320.0
+Camera1.cx: 320.0
+Camera1.cy: 240.0
+
+Camera.width: 640
+Camera.height: 480
+
+# Challenge images do not carry timestamps in their filenames. 10 Hz is used
+# as the nominal sequence rate; tartanair_stereo_eval also accepts --fps.
+Camera.fps: 10
+
+# cv::imread returns BGR. Tracking converts BGR -> RGB internally.
+Camera.RGB: 0
+
+# Stereo baseline [m]
+Stereo.b: 0.25
+
+Stereo.ThDepth: 40.0
+
+# ORB
+ORBextractor.nFeatures: 1200
+ORBextractor.scaleFactor: 1.2
+ORBextractor.nLevels: 8
+ORBextractor.iniThFAST: 20
+ORBextractor.minThFAST: 7
+
+# Viewer
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2.0
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3.0
+Viewer.ViewpointX: 0.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -1.8
+Viewer.ViewpointF: 500.0
+Viewer.imageViewScale: 1.0
