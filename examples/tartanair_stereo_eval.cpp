@@ -1,8 +1,12 @@
 /**
- * TartanAir V1 Stereo Challenge evaluation runner for Photo-SLAM.
+ * TartanAir stereo evaluation runner for Photo-SLAM.
+ *
+ * Supports both:
+ *   - TartanAir V1 / CVPR Stereo Challenge: image_left / image_right
+ *   - TartanAir V2 front stereo: image_lcam_front / image_rcam_front
  *
  * Keeps the original Photo-SLAM mapping/training path, while adding:
- *   - direct TartanAir challenge folder loading (image_left / image_right)
+ *   - automatic TartanAir V1/V2 stereo folder-layout detection
  *   - explicit frame-range selection (--start/--end/--num-frames)
  *   - per-frame tracking-state logging with exact source image names
  *   - ORB and Gaussian keyframe manifests
@@ -64,6 +68,15 @@ struct TrackingRecord
     bool strict_success = false;
 };
 
+struct TartanAirStereoLayout
+{
+    std::string name;
+    fs::path left_dir_name;
+    fs::path right_dir_name;
+    std::string left_suffix;
+    std::string right_suffix;
+};
+
 static std::string csvQuote(const std::string &s)
 {
     std::string out = "\"";
@@ -104,26 +117,63 @@ static long long timestampKey(double timestamp)
     return static_cast<long long>(std::llround(timestamp * 1e9));
 }
 
+static bool hasSuffix(const std::string &value, const std::string &suffix)
+{
+    return value.size() >= suffix.size() &&
+           value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+static TartanAirStereoLayout detectTartanAirStereoLayout(const fs::path &sequence_root)
+{
+    const bool has_v1_left = fs::is_directory(sequence_root / "image_left");
+    const bool has_v1_right = fs::is_directory(sequence_root / "image_right");
+    if (has_v1_left && has_v1_right)
+    {
+        return {
+            "TartanAir V1 Challenge",
+            "image_left",
+            "image_right",
+            "_left.png",
+            "_right.png"
+        };
+    }
+
+    const bool has_v2_left = fs::is_directory(sequence_root / "image_lcam_front");
+    const bool has_v2_right = fs::is_directory(sequence_root / "image_rcam_front");
+    if (has_v2_left && has_v2_right)
+    {
+        return {
+            "TartanAir V2 front stereo",
+            "image_lcam_front",
+            "image_rcam_front",
+            "_lcam_front.png",
+            "_rcam_front.png"
+        };
+    }
+
+    std::ostringstream oss;
+    oss << "Unsupported TartanAir stereo layout under " << sequence_root << ". Expected either "
+        << "image_left + image_right (V1 challenge) or "
+        << "image_lcam_front + image_rcam_front (V2 front stereo).";
+    throw std::runtime_error(oss.str());
+}
+
 static std::vector<InputFrame> loadTartanAirStereo(
     const fs::path &sequence_root,
+    const TartanAirStereoLayout &layout,
     double fps,
     long long start_frame,
     long long end_frame)
 {
-    const fs::path left_dir = sequence_root / "image_left";
-    const fs::path right_dir = sequence_root / "image_right";
-
-    if (!fs::is_directory(left_dir))
-        throw std::runtime_error("Missing image_left directory: " + left_dir.string());
-    if (!fs::is_directory(right_dir))
-        throw std::runtime_error("Missing image_right directory: " + right_dir.string());
+    const fs::path left_dir = sequence_root / layout.left_dir_name;
+    const fs::path right_dir = sequence_root / layout.right_dir_name;
 
     std::vector<fs::path> left_images;
     for (const auto &entry : fs::directory_iterator(left_dir))
     {
         if (!entry.is_regular_file()) continue;
         const std::string name = entry.path().filename().string();
-        if (name.size() >= 9 && name.rfind("_left.png") == name.size() - 9)
+        if (hasSuffix(name, layout.left_suffix))
             left_images.push_back(fs::absolute(entry.path()));
     }
     std::sort(left_images.begin(), left_images.end());
@@ -139,7 +189,7 @@ static std::vector<InputFrame> loadTartanAirStereo(
             continue;
 
         std::ostringstream right_name;
-        right_name << std::setw(6) << std::setfill('0') << frame_index << "_right.png";
+        right_name << std::setw(6) << std::setfill('0') << frame_index << layout.right_suffix;
         const fs::path right = fs::absolute(right_dir / right_name.str());
         if (!fs::exists(right))
             throw std::runtime_error("Missing right image for " + left.string() + ": " + right.string());
@@ -157,7 +207,7 @@ static std::vector<InputFrame> loadTartanAirStereo(
     if (frames.empty())
     {
         std::ostringstream oss;
-        oss << "No *_left.png images found in selected range [" << start_frame << ", ";
+        oss << "No *" << layout.left_suffix << " images found in selected range [" << start_frame << ", ";
         if (end_frame >= 0) oss << end_frame;
         else oss << "end";
         oss << "] under " << left_dir;
@@ -543,10 +593,12 @@ int main(int argc, char **argv)
     const fs::path output_dir = fs::absolute(fs::path(argv[5]));
     fs::create_directories(output_dir);
 
+    TartanAirStereoLayout layout;
     std::vector<InputFrame> frames;
     try
     {
-        frames = loadTartanAirStereo(sequence_root, fps, start_frame, end_frame);
+        layout = detectTartanAirStereoLayout(sequence_root);
+        frames = loadTartanAirStereo(sequence_root, layout, fps, start_frame, end_frame);
     }
     catch (const std::exception &e)
     {
@@ -555,6 +607,8 @@ int main(int argc, char **argv)
     }
 
     std::cout << "TartanAir stereo sequence: " << sequence_root << std::endl;
+    std::cout << "Detected dataset layout: " << layout.name << std::endl;
+    std::cout << "Stereo folders: " << layout.left_dir_name << " / " << layout.right_dir_name << std::endl;
     std::cout << "Selected frame range: " << frames.front().frame_index << "-" << frames.back().frame_index << std::endl;
     std::cout << "Frames: " << frames.size() << std::endl;
     std::cout << "Synthetic timestamp rate: " << fps << " Hz" << std::endl;
@@ -649,6 +703,7 @@ int main(int argc, char **argv)
         std::ofstream timing(output_dir / "timing_summary.txt");
         timing << std::fixed << std::setprecision(9);
         timing << "timing_start after_slam_and_mapper_initialization\n";
+        timing << "dataset_layout " << layout.name << '\n';
         timing << "realtime_playback_sleep 0\n";
         timing << "viewer " << (use_viewer ? 1 : 0) << '\n';
         timing << "selected_start_frame " << frames.front().frame_index << '\n';
@@ -720,6 +775,7 @@ int main(int argc, char **argv)
     for (const auto &r : tracking_records) strict_success += r.strict_success ? 1 : 0;
 
     std::ofstream summary(output_dir / "tracking_summary.txt");
+    summary << "dataset_layout " << layout.name << '\n';
     summary << "selected_start_frame " << frames.front().frame_index << '\n';
     summary << "selected_end_frame " << frames.back().frame_index << '\n';
     summary << "input_frames " << frames.size() << '\n';
