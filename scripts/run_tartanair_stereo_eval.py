@@ -5,6 +5,10 @@ The wrapper keeps Photo-SLAM's existing runner behavior unchanged, then reads th
 vertex count from the FINAL Gaussian point_cloud.ply header. The count is
 therefore available in both quality mode and --skip-final-eval timing mode.
 
+If Photo-SLAM shuts down before Gaussian mapping is initialized, no final
+point_cloud.ply exists. In that case the wrapper reports final_gaussian_count=0
+instead of failing.
+
 The runner's internal timing_summary.txt remains the source of truth for timing:
 this post-run Gaussian-count parsing is NOT included in those wall-time values.
 """
@@ -173,24 +177,36 @@ def main() -> int:
     if completed.returncode != 0:
         return completed.returncode
 
-    ply_path, gaussian_count = find_final_gaussian_ply(result_dir)
+    gaussian_map_initialized = True
+    try:
+        ply_path, gaussian_count = find_final_gaussian_ply(result_dir)
+        source_ply = str(ply_path)
+    except FileNotFoundError:
+        # A cleanly terminated short/difficult sequence may never reach the
+        # minimum number of KFs needed to initialize Gaussian mapping.
+        gaussian_map_initialized = False
+        gaussian_count = 0
+        source_ply = "none"
 
     (result_dir / "final_gaussian_count.txt").write_text(
+        f"gaussian_map_initialized {1 if gaussian_map_initialized else 0}\n"
         f"final_gaussian_count {gaussian_count}\n"
-        f"source_ply {ply_path}\n"
+        f"source_ply {source_ply}\n"
     )
 
     # Keep the key statistic next to the existing run summaries as well.
-    upsert_key_value(
-        result_dir / "tracking_summary.txt",
-        "final_gaussian_count",
-        str(gaussian_count),
-    )
-    upsert_key_value(
-        result_dir / "timing_summary.txt",
-        "final_gaussian_count",
-        str(gaussian_count),
-    )
+    for summary_name in ("tracking_summary.txt", "timing_summary.txt"):
+        upsert_key_value(
+            result_dir / summary_name,
+            "gaussian_map_initialized",
+            "1" if gaussian_map_initialized else "0",
+        )
+        upsert_key_value(
+            result_dir / summary_name,
+            "final_gaussian_count",
+            str(gaussian_count),
+        )
+
     upsert_key_value(
         result_dir / "timing_summary.txt",
         "note_gaussian_count_postprocess_excluded_from_internal_timing",
@@ -198,8 +214,9 @@ def main() -> int:
     )
 
     print("[Final Gaussian model]")
+    print(f"  initialized    : {'yes' if gaussian_map_initialized else 'no'}")
     print(f"  Gaussian count : {gaussian_count:,}")
-    print(f"  source PLY     : {ply_path}")
+    print(f"  source PLY     : {source_ply}")
     print(f"  saved          : {result_dir / 'final_gaussian_count.txt'}")
     return 0
 
