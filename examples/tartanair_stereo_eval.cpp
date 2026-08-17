@@ -3,12 +3,14 @@
  *
  * Keeps the original Photo-SLAM mapping/training path, while adding:
  *   - direct TartanAir challenge folder loading (image_left / image_right)
+ *   - explicit frame-range selection (--start/--end/--num-frames)
  *   - per-frame tracking-state logging with exact source image names
  *   - ORB and Gaussian keyframe manifests
  *   - final-map rendering for every frame present in ORB-SLAM3's final
  *     frame-trajectory bookkeeping (not only keyframes)
  *   - PSNR / SSIM for those final evaluable views
  *   - saved PNG renderings named by the original frame index
+ *   - compute-limited timing metadata with no realtime playback sleep
  *
  * Failed frames are never filled with GT, interpolation, or last-pose fallback.
  */
@@ -102,7 +104,11 @@ static long long timestampKey(double timestamp)
     return static_cast<long long>(std::llround(timestamp * 1e9));
 }
 
-static std::vector<InputFrame> loadTartanAirStereo(const fs::path &sequence_root, double fps)
+static std::vector<InputFrame> loadTartanAirStereo(
+    const fs::path &sequence_root,
+    double fps,
+    long long start_frame,
+    long long end_frame)
 {
     const fs::path left_dir = sequence_root / "image_left";
     const fs::path right_dir = sequence_root / "image_right";
@@ -127,6 +133,11 @@ static std::vector<InputFrame> loadTartanAirStereo(const fs::path &sequence_root
     for (const fs::path &left : left_images)
     {
         const std::size_t frame_index = frameIndexFromPath(left);
+        if (static_cast<long long>(frame_index) < start_frame)
+            continue;
+        if (end_frame >= 0 && static_cast<long long>(frame_index) > end_frame)
+            continue;
+
         std::ostringstream right_name;
         right_name << std::setw(6) << std::setfill('0') << frame_index << "_right.png";
         const fs::path right = fs::absolute(right_dir / right_name.str());
@@ -137,12 +148,21 @@ static std::vector<InputFrame> loadTartanAirStereo(const fs::path &sequence_root
         frame.frame_index = frame_index;
         frame.left_path = left;
         frame.right_path = right;
+        // Keep the ORIGINAL dataset frame index in the timestamp so frame-to-GT
+        // association remains valid even when --start is nonzero.
         frame.timestamp = static_cast<double>(frame_index) / fps;
         frames.push_back(frame);
     }
 
     if (frames.empty())
-        throw std::runtime_error("No *_left.png images found in " + left_dir.string());
+    {
+        std::ostringstream oss;
+        oss << "No *_left.png images found in selected range [" << start_frame << ", ";
+        if (end_frame >= 0) oss << end_frame;
+        else oss << "end";
+        oss << "] under " << left_dir;
+        throw std::runtime_error(oss.str());
+    }
 
     return frames;
 }
@@ -451,27 +471,71 @@ int main(int argc, char **argv)
             << " path_to_gaussian_mapping_settings"
             << " path_to_TartanAir_sequence_root"
             << " path_to_output_directory"
-            << " [viewer] [--fps=10.0]"
+            << " [viewer] [--fps=10.0] [--start=0] [--end=N] [--num-frames=N] [--skip-final-eval]"
             << std::endl;
         return 1;
     }
 
     bool use_viewer = false;
+    bool skip_final_eval = false;
     double fps = 10.0;
+    long long start_frame = 0;
+    long long end_frame = -1;
+    long long num_frames = -1;
+    bool end_explicit = false;
+    bool num_explicit = false;
+
     for (int i = 6; i < argc; ++i)
     {
         const std::string arg(argv[i]);
         if (arg == "viewer") use_viewer = true;
+        else if (arg == "--skip-final-eval") skip_final_eval = true;
         else if (arg.rfind("--fps=", 0) == 0) fps = std::stod(arg.substr(6));
+        else if (arg.rfind("--start=", 0) == 0) start_frame = std::stoll(arg.substr(8));
+        else if (arg.rfind("--end=", 0) == 0)
+        {
+            end_frame = std::stoll(arg.substr(6));
+            end_explicit = true;
+        }
+        else if (arg.rfind("--num-frames=", 0) == 0)
+        {
+            num_frames = std::stoll(arg.substr(13));
+            num_explicit = true;
+        }
         else
         {
             std::cerr << "Unknown optional argument: " << arg << std::endl;
             return 1;
         }
     }
+
     if (!(fps > 0.0))
     {
         std::cerr << "fps must be > 0" << std::endl;
+        return 1;
+    }
+    if (start_frame < 0)
+    {
+        std::cerr << "start frame must be >= 0" << std::endl;
+        return 1;
+    }
+    if (end_explicit && num_explicit)
+    {
+        std::cerr << "Use either --end or --num-frames, not both." << std::endl;
+        return 1;
+    }
+    if (num_explicit)
+    {
+        if (num_frames <= 0)
+        {
+            std::cerr << "num-frames must be > 0" << std::endl;
+            return 1;
+        }
+        end_frame = start_frame + num_frames - 1;
+    }
+    if (end_frame >= 0 && end_frame < start_frame)
+    {
+        std::cerr << "end frame must be >= start frame" << std::endl;
         return 1;
     }
 
@@ -482,7 +546,7 @@ int main(int argc, char **argv)
     std::vector<InputFrame> frames;
     try
     {
-        frames = loadTartanAirStereo(sequence_root, fps);
+        frames = loadTartanAirStereo(sequence_root, fps, start_frame, end_frame);
     }
     catch (const std::exception &e)
     {
@@ -491,8 +555,11 @@ int main(int argc, char **argv)
     }
 
     std::cout << "TartanAir stereo sequence: " << sequence_root << std::endl;
+    std::cout << "Selected frame range: " << frames.front().frame_index << "-" << frames.back().frame_index << std::endl;
     std::cout << "Frames: " << frames.size() << std::endl;
     std::cout << "Synthetic timestamp rate: " << fps << " Hz" << std::endl;
+    std::cout << "Realtime playback sleep: disabled" << std::endl;
+    std::cout << "Offline final tracked-view evaluation: " << (skip_final_eval ? "disabled" : "enabled") << std::endl;
 
     torch::DeviceType device_type = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
     if (device_type == torch::kCUDA)
@@ -519,6 +586,9 @@ int main(int argc, char **argv)
 
     std::vector<TrackingRecord> tracking_records;
     tracking_records.reserve(frames.size());
+
+    // Start after SLAM/mapper construction so this excludes model/vocabulary initialization.
+    const auto stream_start = std::chrono::steady_clock::now();
 
     for (const auto &frame : frames)
     {
@@ -560,11 +630,42 @@ int main(int argc, char **argv)
         tracking_records.push_back(record);
     }
 
-    // Finish ORB-SLAM3 first. GaussianMapper then performs its original tail optimization
-    // and final keyframe rendering before its thread exits.
+    const auto stream_end = std::chrono::steady_clock::now();
+
+    // Finish ORB-SLAM3 first. GaussianMapper then performs its original tail optimization,
+    // original shutdown keyframe rendering, PLY save, and exits.
     pSLAM->Shutdown();
     training_thd.join();
     if (use_viewer) viewer_thd.join();
+
+    const auto mapper_done = std::chrono::steady_clock::now();
+
+    const double stream_wall_sec =
+        std::chrono::duration_cast<std::chrono::duration<double>>(stream_end - stream_start).count();
+    const double pipeline_wall_sec =
+        std::chrono::duration_cast<std::chrono::duration<double>>(mapper_done - stream_start).count();
+
+    {
+        std::ofstream timing(output_dir / "timing_summary.txt");
+        timing << std::fixed << std::setprecision(9);
+        timing << "timing_start after_slam_and_mapper_initialization\n";
+        timing << "realtime_playback_sleep 0\n";
+        timing << "viewer " << (use_viewer ? 1 : 0) << '\n';
+        timing << "selected_start_frame " << frames.front().frame_index << '\n';
+        timing << "selected_end_frame " << frames.back().frame_index << '\n';
+        timing << "input_frames " << frames.size() << '\n';
+        timing << "processed_frames " << tracking_records.size() << '\n';
+        timing << "stream_wall_sec " << stream_wall_sec << '\n';
+        timing << "stream_fps "
+               << (stream_wall_sec > 0.0 ? static_cast<double>(tracking_records.size()) / stream_wall_sec : 0.0)
+               << '\n';
+        timing << "pipeline_until_gaussian_mapper_exit_wall_sec " << pipeline_wall_sec << '\n';
+        timing << "pipeline_until_gaussian_mapper_exit_fps "
+               << (pipeline_wall_sec > 0.0 ? static_cast<double>(tracking_records.size()) / pipeline_wall_sec : 0.0)
+               << '\n';
+        timing << "note_pipeline_time_includes_original_photoslam_tail_optimization_shutdown_keyframe_render_and_ply_save 1\n";
+        timing << "note_pipeline_time_excludes_added_final_tracked_view_evaluation 1\n";
+    }
 
     saveTrackingRecords(tracking_records, output_dir);
     saveOrbKeyframeManifest(pSLAM, output_dir);
@@ -581,28 +682,35 @@ int main(int argc, char **argv)
 
     const auto final_poses = collectFinalFramePosesInMapFrame(pSLAM->getTracker());
 
-    if (!pGausMapper->scene_->keyframes().empty())
+    if (!skip_final_eval)
     {
-        try
+        if (!pGausMapper->scene_->keyframes().empty())
         {
-            evaluateFinalTrackedViews(
-                frames,
-                tracking_records,
-                final_poses,
-                gaussian_keyframe_images,
-                pGausMapper,
-                device_type,
-                output_dir);
+            try
+            {
+                evaluateFinalTrackedViews(
+                    frames,
+                    tracking_records,
+                    final_poses,
+                    gaussian_keyframe_images,
+                    pGausMapper,
+                    device_type,
+                    output_dir);
+            }
+            catch (const std::exception &e)
+            {
+                std::cerr << "[Final rendering evaluation error] " << e.what() << std::endl;
+                return 2;
+            }
         }
-        catch (const std::exception &e)
+        else
         {
-            std::cerr << "[Final rendering evaluation error] " << e.what() << std::endl;
-            return 2;
+            std::cerr << "[Evaluation] Gaussian map was never initialized; no final-view rendering metrics." << std::endl;
         }
     }
     else
     {
-        std::cerr << "[Evaluation] Gaussian map was never initialized; no final-view rendering metrics." << std::endl;
+        std::cout << "[Evaluation] Added final tracked-view rendering skipped by --skip-final-eval." << std::endl;
     }
 
     if (device_type == torch::kCUDA)
@@ -612,6 +720,8 @@ int main(int argc, char **argv)
     for (const auto &r : tracking_records) strict_success += r.strict_success ? 1 : 0;
 
     std::ofstream summary(output_dir / "tracking_summary.txt");
+    summary << "selected_start_frame " << frames.front().frame_index << '\n';
+    summary << "selected_end_frame " << frames.back().frame_index << '\n';
     summary << "input_frames " << frames.size() << '\n';
     summary << "processed_frames " << tracking_records.size() << '\n';
     summary << "strict_success_frames " << strict_success << '\n';
@@ -627,6 +737,8 @@ int main(int argc, char **argv)
     std::cout << "Strict tracking success: " << strict_success << "/" << frames.size() << std::endl;
     std::cout << "Final trajectory pose entries: " << final_poses.size() << std::endl;
     std::cout << "Gaussian keyframes: " << pGausMapper->scene_->keyframes().size() << std::endl;
+    std::cout << "Compute-limited stream wall time: " << stream_wall_sec << " s" << std::endl;
+    std::cout << "Compute-limited pipeline-to-mapper-exit wall time: " << pipeline_wall_sec << " s" << std::endl;
 
     return 0;
 }
