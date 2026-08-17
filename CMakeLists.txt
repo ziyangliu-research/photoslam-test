@@ -77,7 +77,7 @@ add_library(cuda_rasterizer SHARED
     cuda_rasterizer/rasterizer_impl.cu
     cuda_rasterizer/rasterizer_impl.h
     cuda_rasterizer/stereo_vision.h)
-set_target_properties(cuda_rasterizer PROPERTIES CUDA_ARCHITECTURES "75;86")
+set_target_properties(cuda_rasterizer PROPERTIES CUDA_ARCHITECTURES "120")
 # target_compile_features(cuda_rasterizer PUBLIC cxx_std_17)
 target_include_directories(cuda_rasterizer PRIVATE
     ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})

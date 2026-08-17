@@ -71,7 +71,8 @@ ImGuiViewer::ImGuiViewer(
 
     float fovy = graphics_utils::focal2fov(viewpointF_, im_size.height);
     cam_proj_ = glm::perspective(
-        fovy < M_PIf32 ? fovy : M_PIf32, (float)glfw_window_width_ / (float)glfw_window_height_, 0.01f, 100.0f);
+        fovy < static_cast<float>(M_PIf32) ? fovy : static_cast<float>(M_PIf32),
+        (float)glfw_window_width_ / (float)glfw_window_height_, 0.01f, 100.0f);
 
     up_ = glm::vec3(0.0f, -1.0f, 0.0f);
     up_aligned_ = glm::vec4(up_, 1.0f);

@@ -258,10 +258,10 @@ void saveGpuPeakMemoryUsage(std::filesystem::path pathSave)
     namespace c10Alloc = c10::cuda::CUDACachingAllocator;
     c10Alloc::DeviceStats mem_stats = c10Alloc::getDeviceStats(0);
 
-    c10Alloc::Stat reserved_bytes = mem_stats.reserved_bytes[static_cast<int>(c10Alloc::StatType::AGGREGATE)];
+    auto reserved_bytes = mem_stats.reserved_bytes[0];
     float max_reserved_MB = reserved_bytes.peak / (1024.0 * 1024.0);
 
-    c10Alloc::Stat alloc_bytes = mem_stats.allocated_bytes[static_cast<int>(c10Alloc::StatType::AGGREGATE)];
+    auto alloc_bytes = mem_stats.allocated_bytes[0];
     float max_alloc_MB = alloc_bytes.peak / (1024.0 * 1024.0);
 
     std::ofstream out(pathSave);
