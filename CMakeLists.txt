@@ -226,6 +226,13 @@ target_link_libraries(euroc_stereo
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
+# TartanAir V1/V1-challenge Stereo evaluation
+add_executable(tartanair_stereo_eval examples/tartanair_stereo_eval.cpp)
+target_link_libraries(tartanair_stereo_eval
+    gaussian_viewer
+    gaussian_mapper
+    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
+
 ##################################################################################
 ##  Build the mapping examples to ${PROJECT_SOURCE_DIR}/bin
 ##################################################################################
