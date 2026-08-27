@@ -4,10 +4,10 @@
 Default split:
   test_every=5, test_offset=4 -> 4,9,14,... are TEST frames.
 
-TEST frames are still passed through TrackStereo for pose estimation, but the
-patched C++ runner sets Tracking::InformOnlyTracking(true) on those frames so
-they cannot become ORB/Gaussian keyframes. Final PSNR/SSIM rendering is restricted
-to the held-out TEST frames.
+TEST frames are still passed through the normal TrackStereo pose-estimation path.
+The patched C++ runner only suppresses persistent ORB keyframe/map insertion for
+those frames, so their images cannot enter Photo-SLAM Gaussian mapping/training.
+Final PSNR/SSIM rendering is restricted to the held-out TEST frames.
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ def main() -> int:
     print("  " + " ".join(cmd), flush=True)
     print(
         f"[Split] every={args.test_every}, offset={args.test_offset}; "
-        "test frames estimate pose but do not create mapping keyframes",
+        "test frames keep normal pose tracking but cannot create mapping keyframes",
         flush=True,
     )
 
