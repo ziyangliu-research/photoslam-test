@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Run the 0-199 held-out Photo-SLAM benchmark on SH000-SH003.
+"""Run held-out Photo-SLAM benchmarks on TartanAir SH000-SH003.
 
 One pass per sequence produces:
-  * 160 mapping/train frames + 40 held-out pose-only test frames;
+  * 80% mapping/train frames + 20% held-out pose-only test frames;
   * final rendering for all final-evaluable train+test views;
   * largest-Atlas-map ATE and coverage;
   * train/test PSNR and SSIM on the largest coherent map;
   * pipeline wall time / FPS (timing excludes added offline final rendering);
   * final Gaussian count;
   * one aggregate CSV across all requested sequences.
+
+Default mode runs 200 frames from --start. Use --full to run each sequence from
+--start through its final available stereo frame.
 """
 
 from __future__ import annotations
@@ -25,6 +28,17 @@ def run(cmd: list[str], cwd: Path) -> int:
     return subprocess.run(cmd, cwd=str(cwd)).returncode
 
 
+def read_kv(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.exists():
+        return out
+    for raw in path.read_text().splitlines():
+        parts = raw.strip().split(maxsplit=1)
+        if len(parts) == 2:
+            out[parts[0]] = parts[1]
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset-root", default="/home/shiyo/Desktop/Datasets/TartanAir_Stereo_Challenge/stereo")
@@ -33,6 +47,8 @@ def main() -> int:
     ap.add_argument("--sequences", nargs="+", default=["SH000", "SH001", "SH002", "SH003"])
     ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--num-frames", type=int, default=200)
+    ap.add_argument("--full", action="store_true",
+                    help="run from --start through the final available frame of each sequence")
     ap.add_argument("--fps", type=float, default=10.0)
     ap.add_argument("--test-every", type=int, default=5)
     ap.add_argument("--test-offset", type=int, default=4)
@@ -46,15 +62,20 @@ def main() -> int:
     output_root = (root / args.output_root).resolve() if not Path(args.output_root).is_absolute() else Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    end = args.start + args.num_frames - 1
     aggregate_rows: list[dict] = []
     failures: list[tuple[str, str]] = []
 
     for seq in args.sequences:
-        result_name = f"tartanair_v1_{seq}_{args.start}_{end}_split80_20_paper"
-        result_dir = output_root / result_name
         sequence_dir = dataset_root / seq
         gt_path = gt_root / f"{seq}.txt"
+
+        if args.full:
+            result_name = f"tartanair_v1_{seq}_{args.start}_full_split80_20_paper"
+        else:
+            end = args.start + args.num_frames - 1
+            result_name = f"tartanair_v1_{seq}_{args.start}_{end}_split80_20_paper"
+
+        result_dir = output_root / result_name
 
         env_prefix = ["env", f"CUDA_VISIBLE_DEVICES={args.cuda_device}"]
         run_cmd = env_prefix + [
@@ -64,11 +85,13 @@ def main() -> int:
             "--sequence", str(sequence_dir),
             "--output", str(result_dir),
             "--start", str(args.start),
-            "--num-frames", str(args.num_frames),
             "--fps", str(args.fps),
             "--test-every", str(args.test_every),
             "--test-offset", str(args.test_offset),
         ]
+        if not args.full:
+            run_cmd += ["--num-frames", str(args.num_frames)]
+
         rc = run(run_cmd, root)
         if rc != 0:
             failures.append((seq, f"Photo-SLAM run failed rc={rc}"))
@@ -101,7 +124,13 @@ def main() -> int:
         with one_row.open(newline="") as f:
             aggregate_rows.extend(csv.DictReader(f))
 
-    aggregate_path = output_root / f"tartanair_v1_SH000_SH003_{args.start}_{end}_split80_20_summary.csv"
+    if args.full:
+        aggregate_name = f"tartanair_v1_SH000_SH003_{args.start}_full_split80_20_summary.csv"
+    else:
+        end = args.start + args.num_frames - 1
+        aggregate_name = f"tartanair_v1_SH000_SH003_{args.start}_{end}_split80_20_summary.csv"
+    aggregate_path = output_root / aggregate_name
+
     if aggregate_rows:
         fieldnames = list(aggregate_rows[0].keys())
         with aggregate_path.open("w", newline="") as f:
