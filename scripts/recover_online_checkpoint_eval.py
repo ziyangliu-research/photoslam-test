@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import subprocess
 from pathlib import Path
 
@@ -75,8 +74,7 @@ def camera_json_to_twc(item: dict) -> np.ndarray:
 
 def frame_index_from_img_name(name: str) -> int:
     base = Path(name).name
-    token = base.split("_", 1)[0]
-    return int(token)
+    return int(base.split("_", 1)[0])
 
 
 def frame_index_from_timestamp_ns(value: float, fps: float) -> int:
@@ -85,8 +83,7 @@ def frame_index_from_timestamp_ns(value: float, fps: float) -> int:
 
 def rotation_angle_rad(R: np.ndarray) -> float:
     c = (np.trace(R) - 1.0) * 0.5
-    c = float(np.clip(c, -1.0, 1.0))
-    return math.acos(c)
+    return math.acos(float(np.clip(c, -1.0, 1.0)))
 
 
 def append_kv(path: Path, key: str, value: str) -> None:
@@ -161,9 +158,6 @@ def main() -> int:
     if not matched:
         raise RuntimeError("No largest-map keyframe could be matched to ONLINE cameras.json")
 
-    # ORB EuRoC: Twc_export = Tcw_first_map * Twc_map.
-    # Therefore Twc_map = Twc_first_map * Twc_export, where the fixed left
-    # transform is recovered from any matched keyframe.
     matched.sort(key=lambda x: x[0])
     _, Twc_export_ref, Twc_map_ref = matched[0]
     T_map_from_export = Twc_map_ref @ np.linalg.inv(Twc_export_ref)
@@ -210,17 +204,21 @@ def main() -> int:
     if completed.returncode != 0:
         return completed.returncode
 
-    # Old affected runs did not record the exact pre-tail duration in timing_summary.
-    # Keep an explicit approximation based on stream_wall_sec for paper-speed diagnostics.
+    # Affected historical runs contain the exact checkpoint timestamp, but their
+    # runner did not persist stream_start's absolute steady_clock timestamp, so the
+    # exact pre-tail duration cannot be reconstructed after process exit. Use the
+    # already-recorded stream wall time as an explicitly marked approximation.
     timing_path = result_dir / "timing_summary.txt"
     timing = read_kv(timing_path)
     if "online_pipeline_wall_sec" not in timing and "stream_wall_sec" in timing:
         approx_sec = float(timing["stream_wall_sec"])
         input_frames = int(timing.get("input_frames", "0"))
         approx_fps = input_frames / approx_sec if approx_sec > 0 and input_frames > 0 else float("nan")
-        append_kv(timing_path, "online_pipeline_wall_sec_approx", f"{approx_sec:.9f}")
-        append_kv(timing_path, "online_pipeline_fps_approx", f"{approx_fps:.9f}")
-        append_kv(timing_path, "note_online_approx_uses_stream_wall_sec_because_runner_timing_patch_was_missing", "1")
+        append_kv(timing_path, "online_pipeline_wall_sec", f"{approx_sec:.9f}")
+        append_kv(timing_path, "online_pipeline_fps", f"{approx_fps:.9f}")
+        append_kv(timing_path, "online_timing_is_approx", "1")
+        append_kv(timing_path, "online_timing_source", "stream_wall_sec")
+        append_kv(timing_path, "note_online_approx_excludes_tail_but_may_omit_small_mapper_shutdown_lag", "1")
 
     print(f"Recovered ONLINE metrics: {output_dir / 'metrics.csv'}")
     return 0
