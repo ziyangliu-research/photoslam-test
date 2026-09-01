@@ -6,9 +6,9 @@ No SLAM/mapping/optimization is rerun. This script only:
   2. reruns the lightweight summary step;
   3. aggregates ONLINE + FINAL_TAIL rows into one CSV.
 
-For historical affected runs that have the ONLINE checkpoint metadata/PLY but do
-not have exact pre-tail duration fields in timing_summary.txt, stream_wall_sec is
-used only as an explicitly marked approximate ONLINE timing value.
+Existing online_tracked_view_eval/metrics.csv is reused unless --force is given.
+Failures are isolated per sequence so one problematic sequence does not discard
+successfully recovered results from the others.
 """
 
 from __future__ import annotations
@@ -56,9 +56,6 @@ def ensure_online_timing_for_summary(result_dir: Path) -> None:
     timing = read_kv(timing_path)
     if "online_pipeline_wall_sec" in timing:
         return
-
-    # recover_online_checkpoint_eval.py writes these explicit approximation fields
-    # for old runs where the runner-side timing patch was missing.
     approx_sec = timing.get("online_pipeline_wall_sec_approx")
     approx_fps = timing.get("online_pipeline_fps_approx")
     if approx_sec is None:
@@ -70,10 +67,6 @@ def ensure_online_timing_for_summary(result_dir: Path) -> None:
         n = int(input_frames)
         approx_sec = f"{sec:.9f}"
         approx_fps = f"{(n / sec if sec > 0 else float('nan')):.9f}"
-
-    # The existing summary reader consumes online_pipeline_wall_sec. Promote the
-    # approximation under that key, but keep provenance in explicit flags so it
-    # cannot be mistaken for exact pre-tail timing.
     upsert_kv(timing_path, "online_pipeline_wall_sec", approx_sec)
     if approx_fps is not None:
         upsert_kv(timing_path, "online_pipeline_fps", approx_fps)
@@ -93,6 +86,7 @@ def main() -> int:
     ap.add_argument("--gt-root", default="/home/shiyo/Desktop/Datasets/TartanAir_Stereo_Challenge/ground_truth/stereo_gt")
     ap.add_argument("--output-root", default="./results")
     ap.add_argument("--fps", type=float, default=10.0)
+    ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
 
     root = Path(__file__).resolve().parents[1]
@@ -101,37 +95,49 @@ def main() -> int:
     gt_root = Path(args.gt_root)
 
     rows: list[dict] = []
+    failures: list[tuple[str, str]] = []
+
     for seq in args.sequences:
         result_dir = output_root / f"tartanair_v1_{seq}_0_full_split80_20_online_final"
         if not result_dir.exists():
-            raise FileNotFoundError(f"Missing result directory: {result_dir}")
+            failures.append((seq, f"missing result directory: {result_dir}"))
+            continue
 
-        largest_summary = result_dir / "largest_map_eval" / "summary.txt"
-        if not largest_summary.exists():
+        try:
+            largest_summary = result_dir / "largest_map_eval" / "summary.txt"
+            if not largest_summary.exists():
+                run([
+                    sys.executable, "scripts/evaluate_photoslam_largest_map.py",
+                    "--result_dir", str(result_dir),
+                    "--gt", str(gt_root / f"{seq}.txt"),
+                    "--fps", str(args.fps),
+                ], root)
+
+            online_metrics = result_dir / "online_tracked_view_eval" / "metrics.csv"
+            if args.force or not online_metrics.exists():
+                run([
+                    sys.executable, "scripts/recover_online_checkpoint_eval.py",
+                    "--result-dir", str(result_dir),
+                    "--sequence", str(dataset_root / seq),
+                    "--fps", str(args.fps),
+                ], root)
+            else:
+                print(f"\n[Skip recovery] {seq}: {online_metrics} already exists")
+
+            ensure_online_timing_for_summary(result_dir)
+
             run([
-                sys.executable, "scripts/evaluate_photoslam_largest_map.py",
-                "--result_dir", str(result_dir),
-                "--gt", str(gt_root / f"{seq}.txt"),
-                "--fps", str(args.fps),
+                sys.executable, "scripts/summarize_tartanair_split_run.py",
+                "--result-dir", str(result_dir),
+                "--sequence", seq,
             ], root)
 
-        run([
-            sys.executable, "scripts/recover_online_checkpoint_eval.py",
-            "--result-dir", str(result_dir),
-            "--sequence", str(dataset_root / seq),
-            "--fps", str(args.fps),
-        ], root)
-
-        ensure_online_timing_for_summary(result_dir)
-
-        run([
-            sys.executable, "scripts/summarize_tartanair_split_run.py",
-            "--result-dir", str(result_dir),
-            "--sequence", seq,
-        ], root)
-
-        with (result_dir / "split_benchmark_summary.csv").open(newline="") as f:
-            rows.extend(csv.DictReader(f))
+            with (result_dir / "split_benchmark_summary.csv").open(newline="") as f:
+                rows.extend(csv.DictReader(f))
+        except subprocess.CalledProcessError as e:
+            failures.append((seq, f"command failed rc={e.returncode}"))
+        except Exception as e:
+            failures.append((seq, str(e)))
 
     aggregate = output_root / "tartanair_v1_SH000_SH003_0_full_split80_20_online_final_recovered_summary.csv"
     if rows:
@@ -152,7 +158,14 @@ def main() -> int:
             f"{float(r['ate_rmse_m']):.4f} | {fps:>5s} | {int(r['gaussian_count']):,}"
         )
     print("* Affected historical ONLINE runs use stream_wall_sec as an explicitly marked FPS approximation.")
-    print(f"Aggregate CSV: {aggregate}")
+    if rows:
+        print(f"Aggregate CSV: {aggregate}")
+
+    if failures:
+        print("\n[Recovery failures]")
+        for seq, reason in failures:
+            print(f"  {seq}: {reason}")
+        return 2
     return 0
 
 
