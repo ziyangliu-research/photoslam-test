@@ -56,7 +56,6 @@ add_library(simple_knn SHARED
     third_party/simple-knn/simple_knn.h
     third_party/simple-knn/spatial.cu
     third_party/simple-knn/spatial.h)
-# target_compile_features(simple_knn PUBLIC cxx_std_17)
 target_link_libraries(simple_knn "${TORCH_LIBRARIES}")
 
 add_library(cuda_rasterizer SHARED
@@ -78,7 +77,6 @@ add_library(cuda_rasterizer SHARED
     cuda_rasterizer/rasterizer_impl.h
     cuda_rasterizer/stereo_vision.h)
 set_target_properties(cuda_rasterizer PROPERTIES CUDA_ARCHITECTURES "120")
-# target_compile_features(cuda_rasterizer PUBLIC cxx_std_17)
 target_include_directories(cuda_rasterizer PRIVATE
     ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 target_link_libraries(cuda_rasterizer
@@ -176,7 +174,6 @@ target_link_libraries(gaussian_viewer
 ##  Build the test examples to ${PROJECT_SOURCE_DIR}/bin
 ##################################################################################
 
-# This is a C++ libtorch implementation of gaussian-splatting (https://github.com/graphdeco-inria/gaussian-splatting)
 add_executable(train_colmap examples/train_colmap.cpp)
 target_link_libraries(train_colmap
     gaussian_viewer
@@ -191,35 +188,30 @@ target_link_libraries(view_result
 ##  Build the mapping examples to ${PROJECT_SOURCE_DIR}/bin
 ##################################################################################
 
-# Replica Monocular
 add_executable(replica_mono examples/replica_mono.cpp)
 target_link_libraries(replica_mono
     gaussian_viewer    
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
-# Replica Monocular
 add_executable(replica_rgbd examples/replica_rgbd.cpp)
 target_link_libraries(replica_rgbd
     gaussian_viewer    
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
-# TUM Monocular
 add_executable(tum_mono examples/tum_mono.cpp)
 target_link_libraries(tum_mono
     gaussian_viewer    
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
-# TUM RGBD
 add_executable(tum_rgbd examples/tum_rgbd.cpp)
 target_link_libraries(tum_rgbd
     gaussian_viewer    
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
-# EuRoC Stereo
 add_executable(euroc_stereo examples/euroc_stereo.cpp)
 target_link_libraries(euroc_stereo
     gaussian_viewer    
@@ -233,11 +225,16 @@ target_link_libraries(tartanair_stereo_eval
     gaussian_mapper
     ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
 
+# Offline recovery/evaluation of an already-saved TartanAir Gaussian checkpoint.
+add_executable(tartanair_checkpoint_eval examples/tartanair_checkpoint_eval.cpp)
+target_link_libraries(tartanair_checkpoint_eval
+    gaussian_mapper
+    ${ORB_SLAM3_SOURCE_DIR}/lib/libORB_SLAM3.so)
+
 ##################################################################################
 ##  Build the mapping examples to ${PROJECT_SOURCE_DIR}/bin
 ##################################################################################
 
-# Intel Realsense
 if(realsense2_FOUND)
     add_executable(realsense_rgbd examples/realsense_rgbd.cpp)
     target_include_directories(realsense_rgbd PUBLIC
