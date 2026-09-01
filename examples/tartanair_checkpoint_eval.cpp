@@ -105,6 +105,51 @@ static fs::path leftImagePath(const fs::path &sequence_root, std::size_t frame_i
     throw std::runtime_error("Unsupported TartanAir stereo layout: " + sequence_root.string());
 }
 
+static fs::path writeTartanAirLoaderCameraYaml(const fs::path &output_dir,
+                                                const fs::path &sequence_root)
+{
+    // GaussianMapper::loadPly() expects its second argument to be an OpenCV
+    // FileStorage camera YAML (Camera.w/h/type/fx/...), NOT cameras.json.
+    // The latter stores checkpoint keyframe poses and is used only by the Python
+    // recovery step to recover the Gaussian-map coordinate frame.
+    //
+    // TartanAir V1 Challenge: 640x480, fx=fy=320, cx=320, cy=240.
+    // TartanAir V2 front stereo: 640x640, fx=fy=320, cx=cy=320.
+    int width = 0, height = 0;
+    float fx = 320.0f, fy = 320.0f, cx = 320.0f, cy = 0.0f;
+    if (fs::is_directory(sequence_root / "image_left"))
+    {
+        width = 640; height = 480; cy = 240.0f;
+    }
+    else if (fs::is_directory(sequence_root / "image_lcam_front"))
+    {
+        width = 640; height = 640; cy = 320.0f;
+    }
+    else
+    {
+        throw std::runtime_error("Unsupported TartanAir stereo layout: " + sequence_root.string());
+    }
+
+    const fs::path path = output_dir / "_loader_camera.yaml";
+    std::ofstream out(path);
+    if (!out.is_open()) throw std::runtime_error("Cannot write loader camera YAML: " + path.string());
+    out << "%YAML:1.0\n";
+    out << "Camera.type: \"Pinhole\"\n";
+    out << "Camera.w: " << width << "\n";
+    out << "Camera.h: " << height << "\n";
+    out << "Camera.fx: " << fx << "\n";
+    out << "Camera.fy: " << fy << "\n";
+    out << "Camera.cx: " << cx << "\n";
+    out << "Camera.cy: " << cy << "\n";
+    out << "Camera.k1: 0.0\n";
+    out << "Camera.k2: 0.0\n";
+    out << "Camera.p1: 0.0\n";
+    out << "Camera.p2: 0.0\n";
+    out << "Camera.k3: 0.0\n";
+    out.close();
+    return path;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 8)
@@ -116,11 +161,14 @@ int main(int argc, char **argv)
 
     const fs::path gaussian_cfg(argv[1]);
     const fs::path checkpoint_ply(argv[2]);
-    const fs::path cameras_json(argv[3]);
+    const fs::path cameras_json(argv[3]); // recovery provenance only; not OpenCV camera config
     const fs::path sequence_root(argv[4]);
     const fs::path pose_csv(argv[5]);
     const fs::path output_dir(argv[6]);
     const int sh_degree = std::stoi(argv[7]);
+
+    if (!fs::exists(cameras_json))
+        throw std::runtime_error("Checkpoint cameras.json not found: " + cameras_json.string());
 
     fs::create_directories(output_dir);
     const fs::path render_dir = output_dir / "rendered";
@@ -129,7 +177,9 @@ int main(int argc, char **argv)
     torch::DeviceType device_type = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
     auto mapper = std::make_shared<GaussianMapper>(
         nullptr, gaussian_cfg, output_dir / "_loader_tmp", 0, device_type);
-    mapper->loadPly(checkpoint_ply, cameras_json);
+
+    const fs::path loader_camera_yaml = writeTartanAirLoaderCameraYaml(output_dir, sequence_root);
+    mapper->loadPly(checkpoint_ply, loader_camera_yaml);
     mapper->gaussians_->setShDegree(sh_degree);
 
     const auto poses = loadPoseCsv(pose_csv);
@@ -182,6 +232,8 @@ int main(int argc, char **argv)
         summary << "mean_ssim " << (sum_ssim / evaluated) << '\n';
     }
     summary << "evaluation_type recovered_online_checkpoint_largest_map_only\n";
+    summary << "camera_loader_yaml " << loader_camera_yaml.string() << '\n';
+    summary << "checkpoint_cameras_json " << cameras_json.string() << '\n';
 
     std::cout << "[Recovered checkpoint evaluation] " << evaluated << "/" << poses.size() << " rendered\n";
     if (evaluated)
