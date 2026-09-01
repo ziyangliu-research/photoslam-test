@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """Run held-out Photo-SLAM benchmarks on TartanAir SH000-SH003.
 
-One pass per sequence produces:
-  * 80% mapping/train frames + 20% held-out pose-only test frames;
-  * final rendering for all final-evaluable train+test views;
-  * largest-Atlas-map ATE and coverage;
-  * train/test PSNR and SSIM on the largest coherent map;
-  * pipeline wall time / FPS (timing excludes added offline final rendering);
-  * final Gaussian count;
-  * one aggregate CSV across all requested sequences.
+One pass per sequence produces TWO evaluation modes without changing the
+original Photo-SLAM optimization flow:
+
+  ONLINE
+    State after the original incremental-mapping loop and immediately before
+    Photo-SLAM's original post-sequence tail Gaussian optimization.
+
+  FINAL_TAIL
+    Original Photo-SLAM shutdown state after the unmodified tail optimization.
+
+For each mode the suite reports train/test PSNR and SSIM on the largest coherent
+Atlas map, ATE and max-map coverage, and Gaussian count. FPS is reported only for
+ONLINE. The ONLINE timestamp is captured before checkpoint PLY I/O, tail
+optimization, and added offline rendering.
 
 Default mode runs 200 frames from --start. Use --full to run each sequence from
 --start through its final available stereo frame.
@@ -18,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -28,15 +35,16 @@ def run(cmd: list[str], cwd: Path) -> int:
     return subprocess.run(cmd, cwd=str(cwd)).returncode
 
 
-def read_kv(path: Path) -> dict[str, str]:
-    out: dict[str, str] = {}
-    if not path.exists():
-        return out
-    for raw in path.read_text().splitlines():
-        parts = raw.strip().split(maxsplit=1)
-        if len(parts) == 2:
-            out[parts[0]] = parts[1]
-    return out
+def display_float(text: str, fmt: str, empty: str = "—") -> str:
+    if text is None or text == "":
+        return empty
+    try:
+        value = float(text)
+    except ValueError:
+        return empty
+    if not math.isfinite(value):
+        return empty
+    return format(value, fmt)
 
 
 def main() -> int:
@@ -70,10 +78,10 @@ def main() -> int:
         gt_path = gt_root / f"{seq}.txt"
 
         if args.full:
-            result_name = f"tartanair_v1_{seq}_{args.start}_full_split80_20_paper"
+            result_name = f"tartanair_v1_{seq}_{args.start}_full_split80_20_online_final"
         else:
             end = args.start + args.num_frames - 1
-            result_name = f"tartanair_v1_{seq}_{args.start}_{end}_split80_20_paper"
+            result_name = f"tartanair_v1_{seq}_{args.start}_{end}_split80_20_online_final"
 
         result_dir = output_root / result_name
 
@@ -97,6 +105,8 @@ def main() -> int:
             failures.append((seq, f"Photo-SLAM run failed rc={rc}"))
             continue
 
+        # Largest-map selection + SE3/no-scale ATE. This is trajectory-only and
+        # therefore shared by ONLINE and FINAL_TAIL.
         eval_cmd = [
             sys.executable,
             "scripts/evaluate_photoslam_largest_map.py",
@@ -117,18 +127,18 @@ def main() -> int:
         ]
         rc = run(sum_cmd, root)
         if rc != 0:
-            failures.append((seq, f"split summary failed rc={rc}"))
+            failures.append((seq, f"dual-mode split summary failed rc={rc}"))
             continue
 
-        one_row = result_dir / "split_benchmark_summary.csv"
-        with one_row.open(newline="") as f:
+        per_sequence_csv = result_dir / "split_benchmark_summary.csv"
+        with per_sequence_csv.open(newline="") as f:
             aggregate_rows.extend(csv.DictReader(f))
 
     if args.full:
-        aggregate_name = f"tartanair_v1_SH000_SH003_{args.start}_full_split80_20_summary.csv"
+        aggregate_name = f"tartanair_v1_SH000_SH003_{args.start}_full_split80_20_online_final_summary.csv"
     else:
         end = args.start + args.num_frames - 1
-        aggregate_name = f"tartanair_v1_SH000_SH003_{args.start}_{end}_split80_20_summary.csv"
+        aggregate_name = f"tartanair_v1_SH000_SH003_{args.start}_{end}_split80_20_online_final_summary.csv"
     aggregate_path = output_root / aggregate_name
 
     if aggregate_rows:
@@ -138,17 +148,23 @@ def main() -> int:
             writer.writeheader()
             writer.writerows(aggregate_rows)
 
-        print("\n================ Aggregate benchmark ================")
-        print("Sequence | MaxMap | Train PSNR/SSIM | Test PSNR/SSIM | ATE(m) | FPS | Gaussians")
+        print("\n================ Photo-SLAM ONLINE vs FINAL_TAIL ================")
+        print("Sequence | Mode       | MaxMap | Train PSNR/SSIM | Test PSNR/SSIM | ATE(m) | FPS(online only) | Gaussians")
+        print("-" * 118)
         for r in aggregate_rows:
+            maxmap = 100.0 * float(r["largest_map_coverage"])
+            train_psnr = display_float(r.get("train_psnr", ""), ".2f")
+            train_ssim = display_float(r.get("train_ssim", ""), ".4f")
+            test_psnr = display_float(r.get("test_psnr", ""), ".2f")
+            test_ssim = display_float(r.get("test_ssim", ""), ".4f")
+            ate = display_float(r.get("ate_rmse_m", ""), ".4f")
+            fps = display_float(r.get("fps", ""), ".2f")
+            gaussians = f"{int(r['gaussian_count']):,}"
             print(
-                f"{r['sequence']:7s} | "
-                f"{100*float(r['largest_map_coverage']):6.2f}% | "
-                f"{float(r['train_psnr']):6.2f}/{float(r['train_ssim']):.4f} | "
-                f"{float(r['test_psnr']):6.2f}/{float(r['test_ssim']):.4f} | "
-                f"{float(r['ate_rmse_m']):.4f} | "
-                f"{float(r['fps']):6.2f} | "
-                f"{int(r['gaussian_count']):,}"
+                f"{r['sequence']:7s} | {r['mode']:10s} | {maxmap:6.2f}% | "
+                f"{train_psnr:>6s}/{train_ssim:<6s} | "
+                f"{test_psnr:>6s}/{test_ssim:<6s} | "
+                f"{ate:>7s} | {fps:>16s} | {gaussians}"
             )
         print(f"Aggregate CSV: {aggregate_path}")
 
