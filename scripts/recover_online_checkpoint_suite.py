@@ -5,6 +5,10 @@ No SLAM/mapping/optimization is rerun. This script only:
   1. renders each already-saved *_online checkpoint on recovered largest-map poses;
   2. reruns the lightweight summary step;
   3. aggregates ONLINE + FINAL_TAIL rows into one CSV.
+
+For historical affected runs that have the ONLINE checkpoint metadata/PLY but do
+not have exact pre-tail duration fields in timing_summary.txt, stream_wall_sec is
+used only as an explicitly marked approximate ONLINE timing value.
 """
 
 from __future__ import annotations
@@ -19,6 +23,67 @@ from pathlib import Path
 def run(cmd: list[str], cwd: Path) -> None:
     print("\n>>> " + " ".join(cmd), flush=True)
     subprocess.run(cmd, cwd=str(cwd), check=True)
+
+
+def read_kv(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.exists():
+        return out
+    for raw in path.read_text().splitlines():
+        parts = raw.strip().split(maxsplit=1)
+        if len(parts) == 2:
+            out[parts[0]] = parts[1]
+    return out
+
+
+def upsert_kv(path: Path, key: str, value: str) -> None:
+    lines = path.read_text().splitlines() if path.exists() else []
+    out: list[str] = []
+    replaced = False
+    for line in lines:
+        if line.startswith(key + " "):
+            out.append(f"{key} {value}")
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f"{key} {value}")
+    path.write_text("\n".join(out) + "\n")
+
+
+def ensure_online_timing_for_summary(result_dir: Path) -> None:
+    timing_path = result_dir / "timing_summary.txt"
+    timing = read_kv(timing_path)
+    if "online_pipeline_wall_sec" in timing:
+        return
+
+    # recover_online_checkpoint_eval.py writes these explicit approximation fields
+    # for old runs where the runner-side timing patch was missing.
+    approx_sec = timing.get("online_pipeline_wall_sec_approx")
+    approx_fps = timing.get("online_pipeline_fps_approx")
+    if approx_sec is None:
+        stream_sec = timing.get("stream_wall_sec")
+        input_frames = timing.get("input_frames")
+        if stream_sec is None or input_frames is None:
+            return
+        sec = float(stream_sec)
+        n = int(input_frames)
+        approx_sec = f"{sec:.9f}"
+        approx_fps = f"{(n / sec if sec > 0 else float('nan')):.9f}"
+
+    # The existing summary reader consumes online_pipeline_wall_sec. Promote the
+    # approximation under that key, but keep provenance in explicit flags so it
+    # cannot be mistaken for exact pre-tail timing.
+    upsert_kv(timing_path, "online_pipeline_wall_sec", approx_sec)
+    if approx_fps is not None:
+        upsert_kv(timing_path, "online_pipeline_fps", approx_fps)
+    upsert_kv(timing_path, "online_timing_is_approx", "1")
+    upsert_kv(timing_path, "online_timing_source", "stream_wall_sec")
+    upsert_kv(
+        timing_path,
+        "note_online_approx_excludes_tail_but_may_omit_mapper_catchup_after_last_track_call",
+        "1",
+    )
 
 
 def main() -> int:
@@ -57,6 +122,8 @@ def main() -> int:
             "--fps", str(args.fps),
         ], root)
 
+        ensure_online_timing_for_summary(result_dir)
+
         run([
             sys.executable, "scripts/summarize_tartanair_split_run.py",
             "--result-dir", str(result_dir),
@@ -84,7 +151,7 @@ def main() -> int:
             f"{float(r['test_psnr']):6.2f}/{float(r['test_ssim']):.4f} | "
             f"{float(r['ate_rmse_m']):.4f} | {fps:>5s} | {int(r['gaussian_count']):,}"
         )
-    print("* For the affected historical runs, ONLINE FPS uses stream_wall_sec as an explicitly marked approximation.")
+    print("* Affected historical ONLINE runs use stream_wall_sec as an explicitly marked FPS approximation.")
     print(f"Aggregate CSV: {aggregate}")
     return 0
 
