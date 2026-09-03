@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run held-out Photo-SLAM benchmarks on TartanAir SH000-SH003.
+"""Run held-out Photo-SLAM benchmarks on selected TartanAir sequences.
 
 One pass per sequence produces TWO evaluation modes without changing the
 original Photo-SLAM optimization flow:
@@ -105,8 +105,6 @@ def main() -> int:
             failures.append((seq, f"Photo-SLAM run failed rc={rc}"))
             continue
 
-        # Largest-map selection + SE3/no-scale ATE. This is trajectory-only and
-        # therefore shared by ONLINE and FINAL_TAIL.
         eval_cmd = [
             sys.executable,
             "scripts/evaluate_photoslam_largest_map.py",
@@ -134,11 +132,12 @@ def main() -> int:
         with per_sequence_csv.open(newline="") as f:
             aggregate_rows.extend(csv.DictReader(f))
 
+    seq_tag = "_".join(args.sequences)
     if args.full:
-        aggregate_name = f"tartanair_v1_SH000_SH003_{args.start}_full_split80_20_online_final_summary.csv"
+        aggregate_name = f"tartanair_v1_{seq_tag}_{args.start}_full_split80_20_online_final_summary.csv"
     else:
         end = args.start + args.num_frames - 1
-        aggregate_name = f"tartanair_v1_SH000_SH003_{args.start}_{end}_split80_20_online_final_summary.csv"
+        aggregate_name = f"tartanair_v1_{seq_tag}_{args.start}_{end}_split80_20_online_final_summary.csv"
     aggregate_path = output_root / aggregate_name
 
     if aggregate_rows:
