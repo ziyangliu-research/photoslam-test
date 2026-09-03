@@ -21,7 +21,9 @@ try:
     import lpips
 except ImportError as e:
     raise SystemExit(
-        "Missing LPIPS dependency. Install in the active Photo-SLAM environment with:\n"
+        "Missing LPIPS/PyTorch dependency in the active Python environment.\n"
+        "For this Photo-SLAM setup (LibTorch 2.7.0 + CUDA 12.8), install matching Python wheels:\n"
+        "  pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128\n"
         "  pip install lpips pillow\n"
         f"Original import error: {e}"
     )
