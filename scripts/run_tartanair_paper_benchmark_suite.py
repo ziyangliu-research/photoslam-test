@@ -79,7 +79,11 @@ def main() -> int:
         cwd=str(root),
     )
     if dep.returncode != 0:
-        print("Install the missing evaluation dependency first: pip install lpips pillow")
+        print(
+            "Install matching Python PyTorch + LPIPS first:\n"
+            "  python3 -m pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128\n"
+            "  python3 -m pip install lpips pillow"
+        )
         return dep.returncode
 
     aggregate_rows: list[dict] = []
