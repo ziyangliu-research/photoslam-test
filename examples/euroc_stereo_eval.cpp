@@ -200,15 +200,21 @@ static void evaluateViews(
     const fs::path &output_dir,
     const std::string &subdir)
 {
+    if (mapper->scene_->cameras_.empty())
+        throw std::runtime_error("Gaussian scene has no camera for EuRoC evaluation");
+    Camera &eval_camera = mapper->scene_->cameras_.begin()->second;
+
     const fs::path eval_dir = output_dir / subdir;
     const fs::path render_dir = eval_dir / "rendered";
+    const fs::path gt_dir = eval_dir / "gt_undistorted";
     fs::create_directories(render_dir);
+    fs::create_directories(gt_dir);
 
     std::map<std::size_t, TrackingRecord> tr_by_idx;
     for (const auto &r : tracking_records) tr_by_idx[r.frame_index] = r;
 
     std::ofstream metrics(eval_dir / "metrics.csv");
-    metrics << "frame_index,source_index,timestamp_ns,timestamp,left_image,tracking_state,tracking_state_name,pose_set,strict_success,is_gaussian_keyframe,psnr,ssim,rendered_image\n";
+    metrics << "frame_index,source_index,timestamp_ns,timestamp,source_left_image,left_image,tracking_state,tracking_state_name,pose_set,strict_success,is_gaussian_keyframe,psnr,ssim,rendered_image\n";
 
     std::size_t evaluated = 0;
     double sum_psnr = 0.0, sum_ssim = 0.0;
@@ -217,7 +223,14 @@ static void evaluateViews(
     {
         auto pose_it = poses.find(frame.timestamp_ns);
         if (pose_it == poses.end()) continue;
-        cv::Mat gt = loadRgbFloat(frame.left_path);
+
+        // Photo-SLAM trains/renders in its undistorted camera domain. Apply the
+        // exact same Camera object/map created from the official EuRoC config to
+        // the evaluation GT before PSNR/SSIM/LPIPS.
+        cv::Mat gt_raw = loadRgbFloat(frame.left_path);
+        cv::Mat gt;
+        eval_camera.undistortImage(gt_raw, gt);
+
         cv::Mat rendered = mapper->renderFromPose(pose_it->second, gt.cols, gt.rows, true);
         if (rendered.empty()) continue;
         if (rendered.size() != gt.size()) cv::resize(gt, gt, rendered.size(), 0, 0, cv::INTER_LINEAR);
@@ -230,7 +243,9 @@ static void evaluateViews(
         std::ostringstream fn;
         fn << std::setw(6) << std::setfill('0') << frame.frame_index << ".png";
         const fs::path render_path = render_dir / fn.str();
+        const fs::path gt_path = gt_dir / fn.str();
         saveRgbFloatPng(rendered, render_path);
+        saveRgbFloatPng(gt, gt_path);
 
         TrackingRecord tr;
         auto tr_it = tr_by_idx.find(frame.frame_index);
@@ -238,10 +253,10 @@ static void evaluateViews(
         const bool is_gkf = gaussian_keyframe_images.count(frame.left_path.string()) > 0;
         metrics << frame.frame_index << ',' << frame.source_index << ',' << frame.timestamp_ns << ','
                 << std::fixed << std::setprecision(9) << frame.timestamp << ','
-                << csvQuote(frame.left_path.string()) << ',' << tr.tracking_state << ','
-                << trackingStateName(tr.tracking_state) << ',' << (tr.pose_set ? 1 : 0) << ','
-                << (tr.strict_success ? 1 : 0) << ',' << (is_gkf ? 1 : 0) << ','
-                << std::setprecision(10) << psnr << ',' << ssim << ','
+                << csvQuote(frame.left_path.string()) << ',' << csvQuote(gt_path.string()) << ','
+                << tr.tracking_state << ',' << trackingStateName(tr.tracking_state) << ','
+                << (tr.pose_set ? 1 : 0) << ',' << (tr.strict_success ? 1 : 0) << ','
+                << (is_gkf ? 1 : 0) << ',' << std::setprecision(10) << psnr << ',' << ssim << ','
                 << csvQuote(render_path.string()) << '\n';
         if (std::isfinite(psnr) && std::isfinite(ssim))
         {
@@ -252,6 +267,7 @@ static void evaluateViews(
     std::ofstream summary(eval_dir / "summary.txt");
     summary << "input_frames " << frames.size() << '\n';
     summary << "final_evaluable_frames " << evaluated << '\n';
+    summary << "gt_domain Photo-SLAM_official_camera_undistorted\n";
     if (evaluated)
     {
         summary << "mean_psnr " << sum_psnr / evaluated << '\n';
@@ -298,7 +314,8 @@ int main(int argc, char **argv)
     for (const auto &f : frames)
     {
         const bool is_test = static_cast<int>(f.frame_index % static_cast<std::size_t>(test_every)) == test_offset;
-        (is_test ? test_ids : train_ids) << f.frame_index << '\n';
+        if (is_test) test_ids << f.frame_index << '\n';
+        else train_ids << f.frame_index << '\n';
         if (is_test) ++test_count; else ++train_count;
         selected << f.frame_index << ',' << f.source_index << ',' << f.timestamp_ns << ','
                  << std::fixed << std::setprecision(9) << f.timestamp << ','
