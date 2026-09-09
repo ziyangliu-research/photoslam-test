@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Add LPIPS to Photo-SLAM ONLINE/FINAL_TAIL metrics.csv files.
+"""Add LPIPS to Photo-SLAM metrics.csv files.
 
 This is offline evaluation only. It reads the exact GT/rendered image pairs already
 used for PSNR/SSIM, computes LPIPS with the standard AlexNet backbone, and appends
-an `lpips` column to each metrics.csv. Photo-SLAM tracking/mapping/optimization is
-not rerun or modified.
+an `lpips` column to each selected metrics.csv. Photo-SLAM tracking/mapping/
+optimization is not rerun or modified.
 """
 
 from __future__ import annotations
@@ -92,6 +92,12 @@ def main() -> int:
     ap.add_argument("--result-dir", required=True)
     ap.add_argument("--net", default="alex", choices=["alex", "vgg", "squeeze"])
     ap.add_argument("--device", default="auto", help="auto, cpu, cuda, cuda:0, ...")
+    ap.add_argument(
+        "--subdirs",
+        nargs="+",
+        default=["online_tracked_view_eval", "final_tracked_view_eval"],
+        help="Metric subdirectories to process. ETH3D final-only runs use: final_tracked_view_eval",
+    )
     args = ap.parse_args()
 
     result_dir = Path(args.result_dir).resolve()
@@ -103,7 +109,7 @@ def main() -> int:
     print(f"[LPIPS] backbone={args.net}, device={device}")
     model = lpips.LPIPS(net=args.net).to(device).eval()
 
-    for subdir in ("online_tracked_view_eval", "final_tracked_view_eval"):
+    for subdir in args.subdirs:
         path = result_dir / subdir / "metrics.csv"
         count, mean = process_metrics(path, result_dir, model, device)
         print(f"  {subdir}: {count} views, mean LPIPS={mean:.6f}")
