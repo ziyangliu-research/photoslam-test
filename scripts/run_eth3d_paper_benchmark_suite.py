@@ -56,6 +56,8 @@ def write_orb_yaml(calib: dict, timestamps: list[float], out: Path) -> None:
 
     # Keep Photo-SLAM's official EuRoC ORB extractor values. Only the rectified
     # ETH3D camera geometry, image size, fps and stereo baseline are dataset-specific.
+    # The runner loads PNGs with cv::imread(), hence input memory order is BGR.
+    # Camera.RGB=0 makes Photo-SLAM convert BGR->RGB for its Gaussian color path.
     text = f'''%YAML:1.0
 File.version: "1.0"
 
@@ -67,7 +69,7 @@ Camera1.cy: {cy:.12f}
 Camera.width: {width}
 Camera.height: {height}
 Camera.fps: {fps}
-Camera.RGB: 1
+Camera.RGB: 0
 
 Stereo.ThDepth: 60.0
 Stereo.b: {baseline:.12f}
